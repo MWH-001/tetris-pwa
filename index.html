@@ -230,6 +230,7 @@
         <div class="auth-row">
             <button id="btnRegister">注册</button>
             <button id="btnLogin">登录</button>
+            <button id="btnReset" style="background:rgba(255,255,255,0.2);">忘记密码</button>
         </div>
         <div class="auth-row" id="captchaRow" style="display:none;">
             <span id="captchaQuestion" style="font-size:14px;opacity:0.9;min-width:100px;"></span>
@@ -663,6 +664,13 @@
         });
         document.getElementById('btnLogout').addEventListener('click', function() {
             auth.signOut();
+        });
+        document.getElementById('btnReset').addEventListener('click', function() {
+            var email = document.getElementById('emailInput').value;
+            if (!email) { setStatus('请先输入邮箱，再点忘记密码'); return; }
+            auth.sendPasswordResetEmail(email)
+                .then(function() { setStatus('重置密码邮件已发送到 ' + email + '，请查收'); })
+                .catch(function(e) { setStatus(e.message); });
         });
         document.getElementById('btnRefreshLeaderboard').addEventListener('click', loadLeaderboard);
 
