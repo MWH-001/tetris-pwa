@@ -8,7 +8,11 @@
     <meta name="theme-color" content="#667eea">
     <link rel="manifest" href="manifest.json">
     <link rel="icon" href="icon-192.png">
-    <title>俄罗斯方块</title>
+    <title>俄罗斯方块 - 登录与排行榜</title>
+    <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+    <script src="firebase-config.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body {
@@ -28,6 +32,38 @@
             color: #fff;
             padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
         }
+        .auth-panel, .leaderboard-panel {
+            width: min(92vw, 640px);
+            background: rgba(0,0,0,0.22);
+            border: 1px solid rgba(255,255,255,0.14);
+            border-radius: 14px;
+            padding: 14px;
+            box-shadow: 0 10px 24px rgba(0,0,0,0.18);
+        }
+        .auth-panel h3, .leaderboard-panel h3 { margin-bottom: 10px; }
+        .auth-row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+        .auth-row input {
+            flex: 1;
+            min-width: 160px;
+            border: 0;
+            outline: none;
+            border-radius: 10px;
+            padding: 10px 12px;
+            font-size: 14px;
+        }
+        .auth-row button, .leaderboard-panel button {
+            border: 0;
+            outline: none;
+            border-radius: 10px;
+            padding: 10px 14px;
+            background: #667eea;
+            color: #fff;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .auth-note { font-size: 12px; opacity: 0.8; margin-top: 8px; line-height: 1.5; }
+        .user-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+        .status { font-size: 13px; opacity: 0.9; }
         .game-wrapper {
             display: flex;
             flex-direction: column;
@@ -185,7 +221,24 @@
     </style>
 </head>
 <body>
-    <div class="game-wrapper">
+    <div class="auth-panel" id="authPanel">
+        <h3>登录后记录分数</h3>
+        <div class="auth-row">
+            <input id="emailInput" type="email" placeholder="邮箱">
+            <input id="passwordInput" type="password" placeholder="密码">
+        </div>
+        <div class="auth-row">
+            <button id="btnRegister">注册</button>
+            <button id="btnLogin">登录</button>
+        </div>
+        <div class="auth-note">提示：先到 Firebase 控制台启用 Authentication → Email/Password。</div>
+        <div class="status" id="authStatus"></div>
+    </div>
+    <div class="game-wrapper" id="gameWrapper" style="display:none;">
+        <div class="user-bar">
+            <div class="status" id="userInfo"></div>
+            <button id="btnLogout">退出登录</button>
+        </div>
         <div class="top-bar">
             <div class="stat">
                 <div class="label">分数</div>
@@ -228,6 +281,13 @@
             <div class="action-btn" id="btnPause">暂停</div>
         </div>
     </div>
+    <div class="leaderboard-panel" id="leaderboardPanel" style="display:none; margin-top:12px;">
+        <div class="user-bar">
+            <h3>排行榜</h3>
+            <button id="btnRefreshLeaderboard">刷新</button>
+        </div>
+        <div id="leaderboardList" class="auth-note">加载中…</div>
+    </div>
     <div class="install-hint" id="installHint">长按浏览器菜单 → 添加到主屏幕</div>
 
     <script>
@@ -263,8 +323,14 @@
 
         var board, current, next, score, level, lines;
         var gameOver, paused, dropInterval, lastDrop, rafId;
+        var auth = null, db = null, currentUser = null, lastSubmittedScore = 0;
+        var leaderboardCache = [];
 
         function init() {
+            if (!board) {
+                var authPanel = document.getElementById('authPanel');
+                authPanel.style.display = 'block';
+            }
             board = [];
             for (var r = 0; r < ROWS; r++) board.push(new Array(COLS).fill(0));
             score = 0; level = 1; lines = 0;
@@ -460,9 +526,93 @@
             setTimeout(function() { hint.classList.remove('show'); }, 5000);
         });
 
+        function setStatus(text) { document.getElementById('authStatus').textContent = text || ''; }
+        function setUserInfo(text) { document.getElementById('userInfo').textContent = text || ''; }
+        function showApp() {
+            document.getElementById('authPanel').style.display = 'none';
+            document.getElementById('gameWrapper').style.display = 'flex';
+            document.getElementById('leaderboardPanel').style.display = 'block';
+        }
+        function showAuth() {
+            document.getElementById('authPanel').style.display = 'block';
+            document.getElementById('gameWrapper').style.display = 'none';
+            document.getElementById('leaderboardPanel').style.display = 'none';
+        }
+        function setupFirebase() {
+            if (!window.firebase || !window.firebaseConfig || window.firebaseConfig.apiKey === 'YOUR_API_KEY') return false;
+            firebase.initializeApp(window.firebaseConfig);
+            auth = firebase.auth();
+            db = firebase.firestore();
+            auth.onAuthStateChanged(function(user) {
+                currentUser = user || null;
+                if (user) {
+                    showApp();
+                    setUserInfo('已登录：' + (user.email || user.uid));
+                    loadLeaderboard();
+                    resetGame();
+                } else {
+                    setUserInfo('未登录');
+                    showAuth();
+                }
+            });
+            return true;
+        }
+        function getDisplayName() {
+            if (!currentUser) return 'player';
+            return (currentUser.email || currentUser.uid).split('@')[0];
+        }
+        function submitScore() {
+            if (!db || !currentUser || score <= lastSubmittedScore) return;
+            lastSubmittedScore = score;
+            db.collection('scores').add({
+                uid: currentUser.uid,
+                email: currentUser.email || '',
+                name: getDisplayName(),
+                score: score,
+                level: level,
+                lines: lines,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            }).then(loadLeaderboard).catch(function() {});
+        }
+        function loadLeaderboard() {
+            if (!db) return;
+            db.collection('scores').orderBy('score', 'desc').orderBy('createdAt', 'desc').limit(10).get().then(function(snap) {
+                var html = [];
+                snap.forEach(function(doc, i) {
+                    var d = doc.data();
+                    html.push((i + 1) + '. ' + (d.name || 'player') + ' - ' + d.score + ' 分（' + d.level + '级 / ' + d.lines + '行）');
+                });
+                document.getElementById('leaderboardList').innerHTML = html.length ? html.join('<br>') : '暂无记录';
+            }).catch(function(e) {
+                document.getElementById('leaderboardList').textContent = '排行榜加载失败：' + e.message;
+            });
+        }
+        function resetGame() {
+            board = null;
+            init();
+        }
+        document.getElementById('btnRegister').addEventListener('click', function() {
+            auth.createUserWithEmailAndPassword(document.getElementById('emailInput').value, document.getElementById('passwordInput').value)
+                .then(function() { setStatus('注册成功'); })
+                .catch(function(e) { setStatus(e.message); });
+        });
+        document.getElementById('btnLogin').addEventListener('click', function() {
+            auth.signInWithEmailAndPassword(document.getElementById('emailInput').value, document.getElementById('passwordInput').value)
+                .catch(function(e) { setStatus(e.message); });
+        });
+        document.getElementById('btnLogout').addEventListener('click', function() {
+            auth.signOut();
+        });
+        document.getElementById('btnRefreshLeaderboard').addEventListener('click', loadLeaderboard);
+
         // Service Worker
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('sw.js').catch(function() {});
+        }
+
+        if (!setupFirebase()) {
+            document.getElementById('leaderboardList').textContent = '请先填写 firebase-config.js';
+            showAuth();
         }
 
         init();
