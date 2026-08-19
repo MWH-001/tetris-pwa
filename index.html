@@ -231,6 +231,10 @@
             <button id="btnRegister">注册</button>
             <button id="btnLogin">登录</button>
         </div>
+        <div class="auth-row" id="captchaRow" style="display:none;">
+            <span id="captchaQuestion" style="font-size:14px;opacity:0.9;min-width:100px;"></span>
+            <input id="captchaInput" type="text" placeholder="输入答案" style="max-width:100px;">
+        </div>
         <div class="auth-note">提示：先到 Firebase 控制台启用 Authentication → Email/Password。</div>
         <div class="status" id="authStatus"></div>
     </div>
@@ -574,6 +578,31 @@
                 createdAt: firebase.firestore.FieldValue.serverTimestamp()
             }).then(loadLeaderboard).catch(function() {});
         }
+        function checkEmailVerified(user) {
+            var interval = setInterval(function() {
+                user.reload().then(function() {
+                    if (user.emailVerified) {
+                        clearInterval(interval);
+                        setStatus('邮箱已验证！');
+                        auth.onAuthStateChanged(function(u) {
+                            if (u) {
+                                showApp();
+                                setUserInfo('已登录：' + (u.email || u.uid));
+                                loadLeaderboard();
+                                resetGame();
+                            }
+                        });
+                    }
+                });
+            }, 3000);
+        }
+        function sendVerificationEmail() {
+            if (auth.currentUser) {
+                auth.currentUser.sendEmailVerification()
+                    .then(function() { setStatus('验证邮件已重新发送'); })
+                    .catch(function(e) { setStatus(e.message); });
+            }
+        }
         function loadLeaderboard() {
             if (!db) return;
             db.collection('scores').orderBy('score', 'desc').orderBy('createdAt', 'desc').limit(10).get().then(function(snap) {
@@ -591,13 +620,45 @@
             board = null;
             init();
         }
+        var captchaA, captchaB;
+        function generateCaptcha() {
+            captchaA = Math.floor(Math.random() * 10) + 1;
+            captchaB = Math.floor(Math.random() * 10) + 1;
+            document.getElementById('captchaQuestion').textContent = captchaA + ' + ' + captchaB + ' = ?';
+            document.getElementById('captchaInput').value = '';
+            document.getElementById('captchaRow').style.display = 'flex';
+        }
+        generateCaptcha();
         document.getElementById('btnRegister').addEventListener('click', function() {
-            auth.createUserWithEmailAndPassword(document.getElementById('emailInput').value, document.getElementById('passwordInput').value)
-                .then(function() { setStatus('注册成功'); })
+            var email = document.getElementById('emailInput').value;
+            var password = document.getElementById('passwordInput').value;
+            var captchaAnswer = parseInt(document.getElementById('captchaInput').value);
+            if (captchaAnswer !== captchaA + captchaB) {
+                setStatus('验证码错误，请重新输入');
+                generateCaptcha();
+                return;
+            }
+            auth.createUserWithEmailAndPassword(email, password)
+                .then(function(cred) {
+                    cred.user.sendEmailVerification()
+                        .then(function() {
+                            setStatus('注册成功！验证邮件已发送到 ' + email + '，请查收并点击验证链接。');
+                            checkEmailVerified(cred.user);
+                        })
+                        .catch(function(e) {
+                            setStatus('注册成功，但发送验证邮件失败：' + e.message);
+                        });
+                })
                 .catch(function(e) { setStatus(e.message); });
         });
         document.getElementById('btnLogin').addEventListener('click', function() {
             auth.signInWithEmailAndPassword(document.getElementById('emailInput').value, document.getElementById('passwordInput').value)
+                .then(function(cred) {
+                    if (!cred.user.emailVerified) {
+                        setStatus('邮箱未验证，请先查收邮件并点击验证链接。');
+                        checkEmailVerified(cred.user);
+                    }
+                })
                 .catch(function(e) { setStatus(e.message); });
         });
         document.getElementById('btnLogout').addEventListener('click', function() {
